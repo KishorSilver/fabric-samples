@@ -1,97 +1,159 @@
-/*
- * Copyright IBM Corp All Rights Reserved
- *
- * SPDX-License-Identifier: Apache-2.0
- */
 
-package main
-
-import (
+package main import (
+	"encoding/json"
 	"fmt"
-
+	"strconv"
+	"time"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
-	"github.com/hyperledger/fabric/protos/peer"
-)
+	pb "github.com/hyperledger/fabric/protos/peer" )
+ // This chaincode implements a simple map that is stored in the state.
+ // The following operations are available.
+ // Invoke operations 
+// put - requires two arguments, a key and value 
+// remove - requires a key
+ // get - requires one argument, a key, and returns a value 
+// keys - requires no arguments, returns all keys
+ // SimpleChaincode example simple Chaincode implementation
 
-// SimpleAsset implements a simple chaincode to manage an asset
-type SimpleAsset struct {
+ type SimpleChaincode struct {
 }
-
-// Init is called during chaincode instantiation to initialize any
-// data. Note that chaincode upgrade also calls this function to reset
-// or to migrate data.
-func (t *SimpleAsset) Init(stub shim.ChaincodeStubInterface) peer.Response {
-	// Get the args from the transaction proposal
-	args := stub.GetStringArgs()
-	if len(args) != 2 {
-		return shim.Error("Incorrect arguments. Expecting a key and a value")
-	}
-
-	// Set up any variables or assets here by calling stub.PutState()
-
-	// We store the key and the value on the ledger
-	err := stub.PutState(args[0], []byte(args[1]))
-	if err != nil {
-		return shim.Error(fmt.Sprintf("Failed to create asset: %s", args[0]))
-	}
+// Init is a no-op
+ func (t *SimpleChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 	return shim.Success(nil)
 }
-
-// Invoke is called per transaction on the chaincode. Each transaction is
-// either a 'get' or a 'set' on the asset created by Init function. The Set
-// method may create a new asset by specifying a new key-value pair.
-func (t *SimpleAsset) Invoke(stub shim.ChaincodeStubInterface) peer.Response {
-	// Extract the function and args from the transaction proposal
-	fn, args := stub.GetFunctionAndParameters()
-
-	var result string
-	var err error
-	if fn == "set" {
-		result, err = set(stub, args)
-	} else { // assume 'get' even if fn is nil
-		result, err = get(stub, args)
+// Invoke has two functions
+ // put - takes two arguments, a key and value, and stores them in the state
+ // remove - takes one argument, a key, and removes if from the state
+ func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
+	function, args := stub.GetFunctionAndParameters()
+	switch function {
+	case "put":
+		if len(args) < 2 {
+			return shim.Error("put operation must include two arguments, a key and value")
+		}
+		key := args[0]
+		value := args[1]
+		if err := stub.PutState(key, []byte(value)); err != nil {
+			fmt.Printf("Error putting state %s", err)
+			return shim.Error(fmt.Sprintf("put operation failed. Error updating state: %s", err))
+		}
+		indexName := "compositeKeyTest"
+		compositeKeyTestIndex, err := stub.CreateCompositeKey(indexName, []string{key})
+		if err != nil {
+			return shim.Error(err.Error())
+		}
+		valueByte := []byte{0x00}
+		if err := stub.PutState(compositeKeyTestIndex, valueByte); err != nil {
+			fmt.Printf("Error putting state with compositeKey %s", err)
+			return shim.Error(fmt.Sprintf("put operation failed. Error updating state with compositeKey: %s", err))
+		}
+		return shim.Success(nil)
+	case "remove":
+		if len(args) < 1 {
+			return shim.Error("remove operation must include one argument, a key")
+		}
+		key := args[0]
+		err := stub.DelState(key)
+		if err != nil {
+			return shim.Error(fmt.Sprintf("remove operation failed. Error updating state: %s", err))
+		}
+		return shim.Success(nil)
+	case "get":
+		if len(args) < 1 {
+			return shim.Error("get operation must include one argument, a key")
+		}
+		key := args[0]
+		value, err := stub.GetState(key)
+		if err != nil {
+			return shim.Error(fmt.Sprintf("get operation failed. Error accessing state: %s", err))
+		}
+		return shim.Success(value)
+	case "keys":
+		if len(args) < 2 {
+			return shim.Error("put operation must include two arguments, a key and value")
+		}
+		startKey := args[0]
+		endKey := args[1]
+		//sleep needed to test peer's timeout behavior when using iterators
+		stime := 0
+		if len(args) > 2 {
+			stime, _ = strconv.Atoi(args[2])
+		}
+		keysIter, err := stub.GetStateByRange(startKey, endKey)
+		if err != nil {
+			return shim.Error(fmt.Sprintf("keys operation failed. Error accessing state: %s", err))
+		}
+		defer keysIter.Close()
+		var keys []string
+		for keysIter.HasNext() {
+			//if sleeptime is specied, take a nap
+			if stime > 0 {
+				time.Sleep(time.Duration(stime) * time.Millisecond)
+			}
+			response, iterErr := keysIter.Next()
+			if iterErr != nil {
+				return shim.Error(fmt.Sprintf("keys operation failed. Error accessing state: %s", err))
+			}
+			keys = append(keys, response.Key)
+		}
+		for key, value := range keys {
+			fmt.Printf("key %d contains %s\n", key, value)
+		}
+		jsonKeys, err := json.Marshal(keys)
+		if err != nil {
+			return shim.Error(fmt.Sprintf("keys operation failed. Error marshaling JSON: %s", err))
+		}
+		return shim.Success(jsonKeys)
+	case "query":
+		query := args[0]
+		keysIter, err := stub.GetQueryResult(query)
+		if err != nil {
+			return shim.Error(fmt.Sprintf("query operation failed. Error accessing state: %s", err))
+		}
+		defer keysIter.Close()
+		var keys []string
+		for keysIter.HasNext() {
+			response, iterErr := keysIter.Next()
+			if iterErr != nil {
+				return shim.Error(fmt.Sprintf("query operation failed. Error accessing state: %s", err))
+			}
+			keys = append(keys, response.Key)
+		}
+		jsonKeys, err := json.Marshal(keys)
+		if err != nil {
+			return shim.Error(fmt.Sprintf("query operation failed. Error marshaling JSON: %s", err))
+		}
+		return shim.Success(jsonKeys)
+	case "history":
+		key := args[0]
+		keysIter, err := stub.GetHistoryForKey(key)
+		if err != nil {
+			return shim.Error(fmt.Sprintf("query operation failed. Error accessing state: %s", err))
+		}
+		defer keysIter.Close()
+		var keys []string
+		for keysIter.HasNext() {
+			response, iterErr := keysIter.Next()
+			if iterErr != nil {
+				return shim.Error(fmt.Sprintf("query operation failed. Error accessing state: %s", err))
+			}
+			keys = append(keys, response.TxId)
+		}
+		for key, txID := range keys {
+			fmt.Printf("key %d contains %s\n", key, txID)
+		}
+		jsonKeys, err := json.Marshal(keys)
+		if err != nil {
+			return shim.Error(fmt.Sprintf("query operation failed. Error marshaling JSON: %s", err))
+		}
+		return shim.Success(jsonKeys)
+	default:
+		return shim.Success([]byte("Unsupported operation"))
 	}
-	if err != nil {
-		return shim.Error(err.Error())
-	}
-
-	// Return the result as success payload
-	return shim.Success([]byte(result))
 }
-
-// Set stores the asset (both key and value) on the ledger. If the key exists,
-// it will override the value with the new one
-func set(stub shim.ChaincodeStubInterface, args []string) (string, error) {
-	if len(args) != 2 {
-		return "", fmt.Errorf("Incorrect arguments. Expecting a key and a value")
-	}
-
-	err := stub.PutState(args[0], []byte(args[1]))
-	if err != nil {
-		return "", fmt.Errorf("Failed to set asset: %s", args[0])
-	}
-	return args[1], nil
-}
-
-// Get returns the value of the specified asset key
-func get(stub shim.ChaincodeStubInterface, args []string) (string, error) {
-	if len(args) != 1 {
-		return "", fmt.Errorf("Incorrect arguments. Expecting a key")
-	}
-
-	value, err := stub.GetState(args[0])
-	if err != nil {
-		return "", fmt.Errorf("Failed to get asset: %s with error: %s", args[0], err)
-	}
-	if value == nil {
-		return "", fmt.Errorf("Asset not found: %s", args[0])
-	}
-	return string(value), nil
-}
-
-// main function starts up the chaincode in the container during instantiate
 func main() {
-	if err := shim.Start(new(SimpleAsset)); err != nil {
-		fmt.Printf("Error starting SimpleAsset chaincode: %s", err)
+	err := shim.Start(new(SimpleChaincode))
+	if err != nil {
+		fmt.Printf("Error starting chaincode: %s", err)
 	}
 }
