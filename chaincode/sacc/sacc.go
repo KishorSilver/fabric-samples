@@ -1,5 +1,7 @@
 
-package main import (
+package main
+
+import (
 	"encoding/json"
 	"fmt"
 	"strconv"
